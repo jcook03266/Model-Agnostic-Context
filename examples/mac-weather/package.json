@@ -1,0 +1,18 @@
+{
+  "name": "mac-weather",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc --declaration",
+    "start": "nodemon index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
