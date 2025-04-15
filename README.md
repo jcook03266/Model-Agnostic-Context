@@ -305,6 +305,23 @@ export type RegisteredTool = {
 };
 ```
 
+## MAC-Weather Code Example Input / Output: 
+```typeScript
+mac.handlePrompt("What's the weather in NYC?");
+```
+
+```typeScript
+{
+  embeddedContentResponse: null,
+  content: {
+    type: 'text',
+    text: "As of 2025-04-15T01:00, the current weather in NYC is 11.5°C with windspeed of 8 km/h. The weather information is from the 'weather-checker' tool. Please note that weather conditions can change rapidly and this information may not be current."
+  },
+  error: null,
+  toolInvocationRequest: null
+}
+```
+
 Note: No need to specify the schema for each tool, the available tool context will be provided in every prompt, the LLM can simply search through the context to cross reference the tool via name.
 
 - tool responses can be one of four possible data types: text, image, audio, or blob (for simplicity’s sake i’m going to only support text for right now)
