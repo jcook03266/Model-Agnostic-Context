@@ -75,11 +75,7 @@ function main() {
                     throw new Error("Location not found.");
                 }
 
-                const res = GeoResultSchema.parse(geoData[0]);
-
-                return {
-                    ...res
-                };
+                return GeoResultSchema.parse(geoData[0]);
             }
 
             async function getWeather(lat: number, lon: number): Promise<WeatherResult> {
@@ -103,6 +99,10 @@ function main() {
             };
         }
     });
+
+    // Timeout function
+    // Async logic
+    // Run both in parallel, if the timeout function finishes first then the 
 
     const noForecastFabricationPolicy = new PolicyBuilder()
         .setName("No Forecast Fabrication")

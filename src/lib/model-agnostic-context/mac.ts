@@ -6,9 +6,13 @@ import { Policy } from "../policy-manager/policy";
 
 /**
  * High level interface for interacting with the model-agnostic-context library.
- * Quick setup:
- * 1.) Specify an LLM to use to execute prompts
- * 2.) Add tools for the LLM to use
+ * ## Quick setup:
+ * 1. Specify an LLM to use to execute prompts (e.g. ChatGPT, Claude, DeepSeek etc)
+ * 2. Add tools for the LLM to use; you can specify individual execution time limits for these as well.
+ * 3. Add some policies you want your agent to adhere to
+ * 4. Activate your custom policies
+ * 5. Specify your completion handler which will receive the final result.
+ * 6. Enter a prompt for your agent to answer
  */
 export default class Mac {
     // Properties
@@ -55,7 +59,7 @@ export default class Mac {
         this.orchestrator.removeTool(name);
     }
 
-    // Constraints
+    // Policy Management
     addPolicy(p: Policy) {
         this.orchestrator.policyManager.addPolicy(p);
     }
@@ -88,7 +92,6 @@ export default class Mac {
         this.orchestrator.policyManager.deactivatePoliciesWithTags(tags);
     }
 
-
     // Bridge Management
     public addBridge(bridge: LLMBridge) {
         this.orchestrator.registerBridge(bridge);
@@ -117,9 +120,4 @@ export default class Mac {
             prompt
         );
     }
-}
-
-// Policy builder
-class PolicyBuilder {
-
 }
