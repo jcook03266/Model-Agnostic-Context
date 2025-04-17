@@ -57,7 +57,14 @@ export const ToolSchema = z.object({
          * JSON schema object outlining expected tool parameters
          */
         properties: z.optional(z.object({}).passthrough())
-    }).passthrough() // Allows object schema to preserve properties that are not explicitly defined within the schema itself
+    }).passthrough(), // Allows object schema to preserve properties that are not explicitly defined within the schema itself
+    /**
+     * The time in milliseconds [ms] that this tool is allowed to run for. If the tool doesn't 
+     * return a result within the specified time period then a timeout error is thrown.
+     * 
+     * Default timeout is 10 seconds ~ 10_000 milliseconds 
+     */
+    timeout: z.number()
 })
     .passthrough();
 
@@ -95,6 +102,7 @@ export type RegisteredTool = {
     description?: string;
     inputSchema?: AnyZodObject;
     responseSchema?: AnyZodObject;
+    timeout?: number;
     callback: ToolCallback<undefined | ZodRawShape>;
 };
 

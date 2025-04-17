@@ -323,6 +323,15 @@ class Orchestrator {
         callback: ToolCallback<ParamArgs>
     ): void;
 
+    registerTool<ParamArgs extends ZodRawShape, OutputSchema extends ZodRawShape>(
+        name: string,
+        description: string,
+        paramsSchema: ParamArgs,
+        responseSchema: OutputSchema,
+        timeout: number,
+        callback: ToolCallback<ParamArgs>
+    ): void;
+
     registerTool(name: string, ...rest: unknown[]): void {
         if (this._registeredTools[name]) {
             throw new Error(`Tool: ${name} is already registered`);
@@ -343,6 +352,11 @@ class Orchestrator {
             responseSchema = rest.shift() as ZodRawShape;
         }
 
+        let timeout: number | undefined;
+        if (rest.length > 1) {
+            timeout = rest.shift() as number;
+        }
+
         const callback = rest[0] as ToolCallback<ZodRawShape | undefined>;
         this._registeredTools[name] = {
             description,
@@ -350,7 +364,8 @@ class Orchestrator {
                 undefined : z.object(paramsSchema),
             responseSchema: responseSchema === undefined ?
                 undefined : z.object(responseSchema),
-            callback,
+            timeout,
+            callback
         };
     }
 
@@ -358,16 +373,10 @@ class Orchestrator {
         delete this._registeredTools[name];
     }
 
-    async handleToolRequest(request: ToolInvocationRequest): Promise<ToolInvocationResult> {
-        const tool = this._registeredTools[request.name];
-
-        if (!tool) {
-            throw new MACError(
-                ErrorCode.InvalidToolRequest,
-                `Tool: ${request.name} does not exist.`
-            );
-        }
-
+    private async runTool(
+        tool: RegisteredTool,
+        request: ToolInvocationRequest
+    ): Promise<ToolInvocationResult> {
         if (tool.inputSchema) {
             const parseResult = await tool.inputSchema.safeParseAsync(
                 request.arguments
@@ -407,6 +416,47 @@ class Orchestrator {
             ],
             isError: true
         };
+    }
+
+    /**
+     * Handles the tool request within the timeout limit (default 10 seconds ~ 10_000 [ms])
+     */
+    async handleToolRequest(request: ToolInvocationRequest): Promise<ToolInvocationResult> {
+        const tool = this._registeredTools[request.name];
+
+        if (!tool) {
+            throw new MACError(
+                ErrorCode.InvalidToolRequest,
+                `Tool: ${request.name} does not exist.`
+            );
+        }
+
+        // 10 seconds is the default timeout duration for all tool requests if one is not specified
+        const timeoutDuration = tool.timeout ?? 10_000;
+        let timeoutHandler: NodeJS.Timeout;
+
+        const toolResult = await this.runTool(tool, request);
+        const timeoutPromise: Promise<ToolInvocationResult> = new Promise((_, reject) => {
+            timeoutHandler = setTimeout(() => {
+                reject({
+                    content: [
+                        {
+                            type: "text",
+                            text: `Tool: ${request.name} did not finish within the allotted time limit: ${timeoutDuration} [ms]`
+                        }
+                    ],
+                    isError: true
+                });
+            }, timeoutDuration);
+        });
+
+        return Promise.race([
+            timeoutPromise,
+            toolResult
+        ]).then((res) => {
+            clearTimeout(timeoutHandler);
+            return res;
+        });
     }
 
     // Utils
