@@ -1,0 +1,24 @@
+{
+  "name": "mac-earthquakes",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc --declaration",
+    "start": "nodemon index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "openai": "^4.103.0",
+    "yarn": "^1.22.22",
+    "zod": "^3.25.28",
+    "zod-to-json-schema": "^3.24.5"
+  }
+}

@@ -57,6 +57,7 @@ function main() {
     });
 
     const mac = new Mac(openAIBridge);
+ 
     mac.addTool({
         name: "weather-checker",
         description: "Check the weather in any city and state in the United States",

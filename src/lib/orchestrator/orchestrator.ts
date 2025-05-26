@@ -28,6 +28,7 @@ import {
     RequestTypes
 } from "../shared/types";
 import PolicyManager from "../policy-manager/policyManager";
+import { extractValidJSON } from "../shared/utils";
 
 class Orchestrator {
     static instance: Orchestrator = new Orchestrator();
@@ -112,9 +113,8 @@ class Orchestrator {
         try {
             const firstRequest = (await this.discoveryPrompt(bridge, basePrompt));
 
-            if (firstRequest) {
-                await this.contextAwarePrompt(bridge, basePrompt, firstRequest);
-            }
+            // First request was valid, starting prompt chain to obtain final context enriched answer
+            if (firstRequest) await this.contextAwarePrompt(bridge, basePrompt, firstRequest);
         }
         catch (e) {
             console.error(e);
@@ -160,8 +160,11 @@ class Orchestrator {
             return;
         }
 
-        const llmMessage = LLMMessageSchema.safeParse(res),
-            parsedResponse = llmMessage.data ? JSON.parse(llmMessage.data?.content.text) : undefined,
+        // Parse the LLM's response as a valid JSON
+        const message = LLMMessageSchema.safeParse(res),
+            parsedText = message.data?.content.text,
+            responseJSONString = parsedText ? extractValidJSON(parsedText) : undefined,
+            parsedResponse = responseJSONString ? JSON.parse(responseJSONString) : undefined,
             discoveryOutput = MacDiscoveryOutputSchema.safeParse(parsedResponse),
             output = discoveryOutput.data;
 
@@ -290,8 +293,11 @@ class Orchestrator {
             return;
         }
 
-        const llmMessage = LLMMessageSchema.safeParse(res),
-            parsedResponse = llmMessage.data ? JSON.parse(llmMessage.data?.content.text) : undefined,
+        // Parse the LLM's response as a valid JSON
+        const message = LLMMessageSchema.safeParse(res),
+            parsedText = message.data?.content.text,
+            responseJSONString = parsedText ? extractValidJSON(parsedText) : undefined,
+            parsedResponse = responseJSONString ? JSON.parse(responseJSONString) : undefined,
             contextAwareOutput = LLMContextAwareOutputSchema.safeParse(parsedResponse),
             output = contextAwareOutput.data;
 
@@ -326,8 +332,6 @@ class Orchestrator {
                 error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResponse}`
             });
         }
-
-        return;
     }
 
     // Resources
@@ -343,7 +347,7 @@ class Orchestrator {
         name: string,
         uri: string,
         metadata: ResourceMetadata,
-        readCallback: ReadResourceCallback,
+        callback: ReadResourceCallback,
     ): RegisteredResource;
 
     /**
@@ -352,7 +356,7 @@ class Orchestrator {
     registerResource(
         name: string,
         template: ResourceTemplate,
-        readCallback: ReadResourceTemplateCallback,
+        callback: ReadResourceTemplateCallback,
     ): RegisteredResourceTemplate;
 
     /**
@@ -362,7 +366,7 @@ class Orchestrator {
         name: string,
         template: ResourceTemplate,
         metadata: ResourceMetadata,
-        readCallback: ReadResourceTemplateCallback,
+        callback: ReadResourceTemplateCallback,
     ): RegisteredResourceTemplate;
 
     registerResource(
@@ -375,7 +379,7 @@ class Orchestrator {
             metadata = rest.shift() as ResourceMetadata;
         }
 
-        const readCallback = rest[0] as
+        const callback = rest[0] as
             | ReadResourceCallback
             | ReadResourceTemplateCallback;
 
@@ -387,7 +391,7 @@ class Orchestrator {
             const registeredResource: RegisteredResource = {
                 name,
                 metadata,
-                readCallback: readCallback as ReadResourceCallback,
+                callback: callback as ReadResourceCallback,
                 enabled: true,
                 disable: () => registeredResource.update({ enabled: false }),
                 enable: () => registeredResource.update({ enabled: true }),
@@ -399,7 +403,7 @@ class Orchestrator {
                     }
                     if (typeof updates.name !== "undefined") registeredResource.name = updates.name
                     if (typeof updates.metadata !== "undefined") registeredResource.metadata = updates.metadata
-                    if (typeof updates.callback !== "undefined") registeredResource.readCallback = updates.callback
+                    if (typeof updates.callback !== "undefined") registeredResource.callback = updates.callback
                     if (typeof updates.enabled !== "undefined") registeredResource.enabled = updates.enabled
                 }
             };
@@ -415,7 +419,7 @@ class Orchestrator {
             const registeredResourceTemplate: RegisteredResourceTemplate = {
                 resourceTemplate: uriOrTemplate,
                 metadata,
-                readCallback: readCallback as ReadResourceTemplateCallback,
+                callback: callback as ReadResourceTemplateCallback,
                 enabled: true,
                 disable: () => registeredResourceTemplate.update({ enabled: false }),
                 enable: () => registeredResourceTemplate.update({ enabled: true }),
@@ -427,7 +431,7 @@ class Orchestrator {
                     }
                     if (typeof updates.template !== "undefined") registeredResourceTemplate.resourceTemplate = updates.template
                     if (typeof updates.metadata !== "undefined") registeredResourceTemplate.metadata = updates.metadata
-                    if (typeof updates.callback !== "undefined") registeredResourceTemplate.readCallback = updates.callback
+                    if (typeof updates.callback !== "undefined") registeredResourceTemplate.callback = updates.callback
                     if (typeof updates.enabled !== "undefined") registeredResourceTemplate.enabled = updates.enabled
                 }
             };
@@ -456,7 +460,7 @@ class Orchestrator {
                     `Resource: ${uri} is disabled`,
                 );
             }
-            return await resource.readCallback(uri);
+            return await resource.callback(uri);
         }
 
         // Check templates
@@ -469,7 +473,7 @@ class Orchestrator {
                 .match(uri.toString());
 
             if (variables) {
-                return await template.readCallback(uri, variables);
+                return await template.callback(uri, variables);
             }
         }
 

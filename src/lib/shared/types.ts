@@ -159,7 +159,7 @@ export type ReadResourceCallback = (
 export type RegisteredResource = {
     name: string;
     metadata?: ResourceMetadata;
-    readCallback: ReadResourceCallback;
+    callback: ReadResourceCallback;
     enabled: boolean;
     enable(): void;
     disable(): void;
@@ -170,7 +170,7 @@ export type RegisteredResource = {
 export type RegisteredResourceTemplate = {
     resourceTemplate: ResourceTemplate;
     metadata?: ResourceMetadata;
-    readCallback: ReadResourceTemplateCallback;
+    callback: ReadResourceTemplateCallback;
     enabled: boolean;
     enable(): void;
     disable(): void;
