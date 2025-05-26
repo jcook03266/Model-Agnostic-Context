@@ -23,6 +23,15 @@ export default class Mac {
         this.orchestrator.currentBridge = bridge.name;
     }
 
+    // Configuration
+    public set maxActionChainLength(length: number) {
+        if (length < 1) {
+            throw new Error("MAC action chain must have a minimum length of 1");
+        }
+
+        this.orchestrator.maxActionChainLength = length;
+    }
+
     // Tools
     public addTool<ParamArgs extends ZodRawShape, OutputSchema extends ZodRawShape>(
         tool: {
@@ -58,6 +67,9 @@ export default class Mac {
     public removeTool(name: string) {
         this.orchestrator.removeTool(name);
     }
+
+    // Resources
+    // public addResource
 
     // Policy Management
     addPolicy(p: Policy) {

@@ -27,8 +27,6 @@ class Orchestrator {
     policyManager: PolicyManager = new PolicyManager();
     // Default is 10 consecutive actions
     maxActionChainLength = 10;
-    // Default is 10 seconds in [ms]
-    toolTimeout = 10_000;
 
     // Tools
     private _registeredTools: { [name: string]: RegisteredTool } = {};
@@ -185,7 +183,7 @@ class Orchestrator {
         basePrompt: string,
         toolRequest: ToolInvocationRequest
     ): Promise<void> {
-        if (this._actionLogs.length >= this.maxActionChainLength) {
+        if (this._actionLogs.length > this.maxActionChainLength) {
             throw new MACError(
                 ErrorCode.MaxActionChainLengthExceeded,
                 `Maximum action chain length exceeded, increase limit.`
@@ -352,7 +350,8 @@ class Orchestrator {
             responseSchema = rest.shift() as ZodRawShape;
         }
 
-        let timeout: number | undefined;
+        // Default timeout duration is 10 seconds (10000[ms])
+        let timeout: number = 10_000;
         if (rest.length > 1) {
             timeout = rest.shift() as number;
         }

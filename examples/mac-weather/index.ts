@@ -100,10 +100,6 @@ function main() {
         }
     });
 
-    // Timeout function
-    // Async logic
-    // Run both in parallel, if the timeout function finishes first then the 
-
     const noForecastFabricationPolicy = new PolicyBuilder()
         .setName("No Forecast Fabrication")
         .setDescription("The assistant must never generate fictional or estimated weather forecasts.")
