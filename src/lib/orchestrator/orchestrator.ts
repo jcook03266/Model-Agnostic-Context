@@ -16,7 +16,15 @@ import {
     LLMContextAwareOutputSchema,
     ContextAwarePrompt,
     DiscoveryPrompt,
-    LLMMessageSchema
+    LLMMessageSchema,
+    RegisteredResource,
+    RegisteredResourceTemplate,
+    ReadResourceCallback,
+    ReadResourceTemplateCallback,
+    ResourceMetadata,
+    ResourceTemplate,
+    ReadResourceRequest,
+    ReadResourceResult
 } from "../shared/types";
 import PolicyManager from "../policy-manager/policyManager";
 
@@ -27,6 +35,12 @@ class Orchestrator {
     policyManager: PolicyManager = new PolicyManager();
     // Default is 10 consecutive actions
     maxActionChainLength = 10;
+
+    // Resources
+    private _registeredResources: { [name: string]: RegisteredResource } = {};
+    private _registeredResourceTemplates: {
+        [name: string]: RegisteredResourceTemplate;
+    } = {};
 
     // Tools
     private _registeredTools: { [name: string]: RegisteredTool } = {};
@@ -288,17 +302,166 @@ class Orchestrator {
         return;
     }
 
+    // Resources
+    /**
+     * Registers a resource `name` at a fixed URI, which will use the given callback to respond to read requests.
+     */
+    registerResource(name: string, uri: string, readCallback: ReadResourceCallback): RegisteredResource;
+
+    /**
+     * Registers a resource `name` at a fixed URI with metadata, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        uri: string,
+        metadata: ResourceMetadata,
+        readCallback: ReadResourceCallback,
+    ): RegisteredResource;
+
+    /**
+     * Registers a resource `name` with a template pattern, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        template: ResourceTemplate,
+        readCallback: ReadResourceTemplateCallback,
+    ): RegisteredResourceTemplate;
+
+    /**
+     * Registers a resource `name` with a template pattern and metadata, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        template: ResourceTemplate,
+        metadata: ResourceMetadata,
+        readCallback: ReadResourceTemplateCallback,
+    ): RegisteredResourceTemplate;
+
+    registerResource(
+        name: string,
+        uriOrTemplate: string | ResourceTemplate,
+        ...rest: unknown[]
+    ): RegisteredResource | RegisteredResourceTemplate {
+        let metadata: ResourceMetadata | undefined;
+        if (typeof rest[0] === "object") {
+            metadata = rest.shift() as ResourceMetadata;
+        }
+
+        const readCallback = rest[0] as
+            | ReadResourceCallback
+            | ReadResourceTemplateCallback;
+
+        if (typeof uriOrTemplate === "string") {
+            if (this._registeredResources[uriOrTemplate]) {
+                throw new Error(`Resource ${uriOrTemplate} is already registered`);
+            }
+
+            const registeredResource: RegisteredResource = {
+                name,
+                metadata,
+                readCallback: readCallback as ReadResourceCallback,
+                enabled: true,
+                disable: () => registeredResource.update({ enabled: false }),
+                enable: () => registeredResource.update({ enabled: true }),
+                remove: () => registeredResource.update({ uri: null }),
+                update: (updates) => {
+                    if (typeof updates.uri !== "undefined" && updates.uri !== uriOrTemplate) {
+                        delete this._registeredResources[uriOrTemplate]
+                        if (updates.uri) this._registeredResources[updates.uri] = registeredResource
+                    }
+                    if (typeof updates.name !== "undefined") registeredResource.name = updates.name
+                    if (typeof updates.metadata !== "undefined") registeredResource.metadata = updates.metadata
+                    if (typeof updates.callback !== "undefined") registeredResource.readCallback = updates.callback
+                    if (typeof updates.enabled !== "undefined") registeredResource.enabled = updates.enabled
+                }
+            };
+
+            this._registeredResources[uriOrTemplate] = registeredResource;
+            return registeredResource;
+
+        } else {
+            if (this._registeredResourceTemplates[name]) {
+                throw new Error(`Resource template ${name} is already registered`);
+            }
+
+            const registeredResourceTemplate: RegisteredResourceTemplate = {
+                resourceTemplate: uriOrTemplate,
+                metadata,
+                readCallback: readCallback as ReadResourceTemplateCallback,
+                enabled: true,
+                disable: () => registeredResourceTemplate.update({ enabled: false }),
+                enable: () => registeredResourceTemplate.update({ enabled: true }),
+                remove: () => registeredResourceTemplate.update({ name: null }),
+                update: (updates) => {
+                    if (typeof updates.name !== "undefined" && updates.name !== name) {
+                        delete this._registeredResourceTemplates[name]
+                        if (updates.name) this._registeredResourceTemplates[updates.name] = registeredResourceTemplate
+                    }
+                    if (typeof updates.template !== "undefined") registeredResourceTemplate.resourceTemplate = updates.template
+                    if (typeof updates.metadata !== "undefined") registeredResourceTemplate.metadata = updates.metadata
+                    if (typeof updates.callback !== "undefined") registeredResourceTemplate.readCallback = updates.callback
+                    if (typeof updates.enabled !== "undefined") registeredResourceTemplate.enabled = updates.enabled
+                }
+            };
+
+            this._registeredResourceTemplates[name] = registeredResourceTemplate;
+            return registeredResourceTemplate;
+        }
+    }
+
+    removeResource(uriOrTemplate: string) {
+        this._registeredResources[uriOrTemplate].remove();
+        this._registeredResourceTemplates[uriOrTemplate].remove();
+    }
+
+    async handleResourceRequest(request: ReadResourceRequest): Promise<ReadResourceResult> {
+        const uri = new URL(request.uri);
+
+        // Check if resource exists
+        const resource = this._registeredResources[uri.toString()];
+
+        // Verify resource is enabled
+        if (resource) {
+            if (!resource.enabled) {
+                throw new MACError(
+                    ErrorCode.InvalidParams,
+                    `Resource: ${uri} is disabled`,
+                );
+            }
+            return resource.readCallback(uri);
+        }
+
+        // Check templates
+        for (const template of Object.values(
+            this._registeredResourceTemplates,
+        )) {
+            const variables = template
+                .resourceTemplate
+                .uriTemplate
+                .match(uri.toString());
+
+            if (variables) {
+                return template.readCallback(uri, variables);
+            }
+        }
+
+        throw new MACError(
+            ErrorCode.InvalidParams,
+            `Resource ${uri} not found`,
+        );
+    }
+
     // Tools
     /**
     * - Overloaded functions for register tool method
     * Registers a zero-argument tool `name`, which will run the given function when the client calls it.
     */
-    registerTool(name: string, callback: ToolCallback): void;
+    registerTool(name: string, callback: ToolCallback): RegisteredTool;
 
     /**
      * Registers a zero-argument tool `name` (with a description) which will run the given function when the client calls it.
      */
-    registerTool(name: string, description: string, callback: ToolCallback): void;
+    registerTool(name: string, description: string, callback: ToolCallback): RegisteredTool;
 
     /**
      * Registers a tool `name` accepting the given arguments, which must be an object containing named properties associated with Zod schemas. When the client calls it, the function will be run with the parsed and validated arguments.
@@ -308,7 +471,7 @@ class Orchestrator {
         paramsSchema: Args,
         outputSchema: Args,
         callback: ToolCallback<Args>
-    ): void;
+    ): RegisteredTool;
 
     /**
      * Registers a tool `name` (with a description) accepting the given arguments, which must be an object containing named properties associated with Zod schemas. When the client calls it, the function will be run with the parsed and validated arguments.
@@ -319,7 +482,7 @@ class Orchestrator {
         paramsSchema: ParamArgs,
         responseSchema: OutputSchema,
         callback: ToolCallback<ParamArgs>
-    ): void;
+    ): RegisteredTool;
 
     registerTool<ParamArgs extends ZodRawShape, OutputSchema extends ZodRawShape>(
         name: string,
@@ -328,9 +491,9 @@ class Orchestrator {
         responseSchema: OutputSchema,
         timeout: number,
         callback: ToolCallback<ParamArgs>
-    ): void;
+    ): RegisteredTool;
 
-    registerTool(name: string, ...rest: unknown[]): void {
+    registerTool(name: string, ...rest: unknown[]): RegisteredTool {
         if (this._registeredTools[name]) {
             throw new Error(`Tool: ${name} is already registered`);
         }
@@ -350,26 +513,56 @@ class Orchestrator {
             responseSchema = rest.shift() as ZodRawShape;
         }
 
-        // Default timeout duration is 10 seconds (10000[ms])
-        let timeout: number = 10_000;
+        let timeout: number | undefined;
         if (rest.length > 1) {
             timeout = rest.shift() as number;
         }
 
         const callback = rest[0] as ToolCallback<ZodRawShape | undefined>;
-        this._registeredTools[name] = {
+        return this._createRegisteredTool(name, description, paramsSchema, responseSchema, callback, timeout);
+    }
+
+    private _createRegisteredTool(
+        name: string,
+        description: string | undefined,
+        inputSchema: ZodRawShape | undefined,
+        outputSchema: ZodRawShape | undefined,
+        callback: ToolCallback<ZodRawShape | undefined>,
+        timeout: number | undefined
+    ): RegisteredTool {
+        const registeredTool: RegisteredTool = {
             description,
-            inputSchema: paramsSchema === undefined ?
-                undefined : z.object(paramsSchema),
-            responseSchema: responseSchema === undefined ?
-                undefined : z.object(responseSchema),
-            timeout,
-            callback
+            inputSchema:
+                inputSchema === undefined ? undefined : z.object(inputSchema),
+            responseSchema:
+                outputSchema === undefined ? undefined : z.object(outputSchema),
+            callback,
+            // Default timeout duration is 10 seconds (10000[ms])
+            timeout: timeout ?? 10_000,
+            enabled: true,
+            disable: () => registeredTool.update({ enabled: false }),
+            enable: () => registeredTool.update({ enabled: true }),
+            remove: () => registeredTool.update({ name: null }),
+            update: (updates) => {
+                if (typeof updates.name !== "undefined" && updates.name !== name) {
+                    delete this._registeredTools[name];
+                    if (updates.name) this._registeredTools[updates.name] = registeredTool;
+                }
+
+                if (typeof updates.description !== "undefined") registeredTool.description = updates.description;
+                if (typeof updates.paramsSchema !== "undefined") registeredTool.inputSchema = z.object(updates.paramsSchema);
+                if (typeof updates.callback !== "undefined") registeredTool.callback = updates.callback;
+                if (typeof updates.enabled !== "undefined") registeredTool.enabled = updates.enabled;
+                if (typeof updates.timeout !== "undefined") registeredTool.timeout = updates.timeout;
+            },
         };
+
+        this._registeredTools[name] = registeredTool;
+        return registeredTool;
     }
 
     removeTool(name: string) {
-        delete this._registeredTools[name];
+        this._registeredTools[name].remove();
     }
 
     private async runTool(
@@ -430,6 +623,14 @@ class Orchestrator {
             );
         }
 
+        // Verify tool is enabled
+        if (!tool.enabled) {
+            throw new MACError(
+                ErrorCode.InvalidParams,
+                `Tool: ${request.name} is disabled`,
+            );
+        }
+
         // 10 seconds is the default timeout duration for all tool requests if one is not specified
         const timeoutDuration = tool.timeout ?? 10_000;
         let timeoutHandler: NodeJS.Timeout;
@@ -452,8 +653,31 @@ class Orchestrator {
         return Promise.race([
             timeoutPromise,
             toolResult
-        ]).then((res) => {
+        ]).then(async (res) => {
             clearTimeout(timeoutHandler);
+
+            // Force check the response for structure, if no structure exists then throw an error.
+            if (tool.responseSchema) {
+                if (!res.structuredContent) {
+                    throw new MACError(
+                        ErrorCode.InvalidParams,
+                        `Tool: ${request.name} has an output schema but no structured content was provided`,
+                    );
+                }
+
+                // if the tool has an output schema, validate structured content
+                const parseResult = await tool.responseSchema.safeParseAsync(
+                    res.structuredContent,
+                );
+
+                if (!parseResult.success) {
+                    throw new MACError(
+                        ErrorCode.InvalidParams,
+                        `Invalid structured content for tool ${request.name}: ${parseResult.error.message}`,
+                    );
+                }
+            }
+
             return res;
         });
     }

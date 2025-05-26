@@ -1,5 +1,5 @@
 import { AnyZodObject, z, ZodRawShape, ZodTypeAny } from "zod";
-import { Variables } from "./uriTemplate";
+import { UriTemplate, Variables } from "./uriTemplate";
 
 // Errors
 export enum ErrorCode {
@@ -158,6 +158,17 @@ export type RegisteredResource = {
     remove(): void
 };
 
+export type RegisteredResourceTemplate = {
+    resourceTemplate: ResourceTemplate;
+    metadata?: ResourceMetadata;
+    readCallback: ReadResourceTemplateCallback;
+    enabled: boolean;
+    enable(): void;
+    disable(): void;
+    update(updates: { name?: string | null, template?: ResourceTemplate, metadata?: ResourceMetadata, callback?: ReadResourceTemplateCallback, enabled?: boolean }): void
+    remove(): void
+};
+
 /**
  * Callback to read a resource at a given URI, following a filled-in URI template.
  */
@@ -165,6 +176,54 @@ export type ReadResourceTemplateCallback = (
     uri: URL,
     variables: Variables
 ) => ReadResourceResult | Promise<ReadResourceResult>;
+
+/**
+ * A callback to complete one variable within a resource template's URI template.
+ */
+export type CompleteResourceTemplateCallback = (
+    value: string,
+) => string[] | Promise<string[]>;
+
+/**
+ * A resource template combines a URI pattern with optional functionality to enumerate
+ * all resources matching that pattern.
+ */
+export class ResourceTemplate {
+    private _uriTemplate: UriTemplate;
+
+    constructor(
+        uriTemplate: string | UriTemplate,
+        private _callbacks: {
+            /**
+             * An optional callback to autocomplete variables within the URI template. Useful for clients and users to discover possible values.
+             */
+            complete?: {
+                [variable: string]: CompleteResourceTemplateCallback;
+            };
+        },
+    ) {
+        this._uriTemplate =
+            typeof uriTemplate === "string"
+                ? new UriTemplate(uriTemplate)
+                : uriTemplate;
+    }
+
+    /**
+     * Gets the URI template pattern.
+     */
+    get uriTemplate(): UriTemplate {
+        return this._uriTemplate;
+    }
+
+    /**
+     * Gets the callback for completing a specific URI template variable, if one was provided.
+     */
+    completeCallback(
+        variable: string,
+    ): CompleteResourceTemplateCallback | undefined {
+        return this._callbacks.complete?.[variable];
+    }
+}
 
 // Tools
 /**
@@ -224,6 +283,15 @@ export const ToolInvocationResultSchema = z.object({
             AudioContentSchema
         ])
     ),
+    /**
+     * An object containing structured tool output.
+     *
+     * If the Tool defines an responseSchema, this field MUST be present in the result, and contain a JSON object that matches the schema.
+     */
+    structuredContent: z.object({}).passthrough().optional(),
+    /** 
+     * True if an error has occurred during the tool's execution, false otherwise
+     */
     isError: z.boolean().default(false).optional()
 });
 
@@ -238,8 +306,22 @@ export type RegisteredTool = {
     description?: string;
     inputSchema?: AnyZodObject;
     responseSchema?: AnyZodObject;
-    timeout?: number;
     callback: ToolCallback<undefined | ZodRawShape>;
+    timeout?: number;
+    enabled: boolean;
+    enable(): void;
+    disable(): void;
+    update<InputArgs extends ZodRawShape, OutputArgs extends ZodRawShape>(
+        updates: {
+            name?: string | null,
+            description?: string,
+            paramsSchema?: InputArgs,
+            outputSchema?: OutputArgs,
+            callback?: ToolCallback<InputArgs>,
+            enabled?: boolean,
+            timeout?: number;
+        }): void
+    remove(): void
 };
 
 // LLM 
@@ -371,7 +453,6 @@ export type BlobResourceContents = Infer<typeof BlobResourceContentsSchema>;
 export type Resource = Infer<typeof ResourceSchema>;
 export type ReadResourceRequest = Infer<typeof ReadResourceRequestSchema>;
 export type ReadResourceResult = Infer<typeof ReadResourceResultSchema>;
-export type ResourceTemplate = Infer<typeof ResourceTemplateSchema>;
 
 /** Tools */
 export type Tool = Infer<typeof ToolSchema>;
