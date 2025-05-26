@@ -141,6 +141,8 @@ class Orchestrator {
             maxSequentialActions: this.maxActionChainLength,
             systemPolicies: this.policyManager.systemPoliciesToString(),
             userPolicies: this.policyManager.activePoliciesToString(),
+            resources: this.registeredResourcesToString(),
+            resourceTemplates: this.registeredResourceTemplatesToString(),
             tools: this.registeredToolsToString(),
             responseSchema: zodToJsonSchema(MacDiscoveryOutputSchema),
             errorCodes: ErrorCode,
