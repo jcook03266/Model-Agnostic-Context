@@ -5,10 +5,10 @@ import {
 } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
-    ToolInvocationResult,
+    ToolResult,
     RegisteredTool,
     ToolCallback,
-    ToolInvocationRequest,
+    ToolRequest,
     MACError,
     ErrorCode,
     MacDiscoveryOutputSchema,
@@ -124,7 +124,7 @@ class Orchestrator {
     async discoveryPrompt(
         bridge: LLMBridge,
         basePrompt: string
-    ): Promise<ReadResourceRequest | ToolInvocationRequest | undefined> {
+    ): Promise<ReadResourceRequest | ToolRequest | undefined> {
         const discoveryPromptStructure: DiscoveryPrompt = {
             task: `
             Generate a structured JSON response to the given prompt using the given checklist, policies, context, available tools and resources. 
@@ -200,7 +200,7 @@ class Orchestrator {
     async contextAwarePrompt(
         bridge: LLMBridge,
         basePrompt: string,
-        request: ReadResourceRequest | ToolInvocationRequest
+        request: ReadResourceRequest | ToolRequest
     ): Promise<void> {
         if (this._actionLogs.length > this.maxActionChainLength) {
             throw new MACError(
@@ -219,7 +219,7 @@ class Orchestrator {
                 name: request.name,
                 arguments: request.arguments,
                 timeExecuted: Date.now(),
-                response: toolResponse.content,
+                response: toolResponse,
                 isError: toolResponse.isError
             });
 
@@ -240,7 +240,7 @@ class Orchestrator {
                     type: request.type,
                     name: request.uri,
                     timeExecuted: Date.now(),
-                    response: resourceResponse.content,
+                    response: resourceResponse,
                     isError: false
                 });
             } catch (error) {
@@ -595,8 +595,8 @@ class Orchestrator {
 
     private async runTool(
         tool: RegisteredTool,
-        request: ToolInvocationRequest
-    ): Promise<ToolInvocationResult> {
+        request: ToolRequest
+    ): Promise<ToolResult> {
         if (tool.inputSchema) {
             const parseResult = await tool.inputSchema.safeParseAsync(
                 request.arguments
@@ -616,24 +616,20 @@ class Orchestrator {
                 return await Promise.resolve(callback(args));
             } catch (error) {
                 return {
-                    content: [
-                        {
-                            type: "text",
-                            text: error instanceof Error ? error.message : String(error)
-                        }
-                    ],
+                    structuredContent: {
+                        type: "text",
+                        text: error instanceof Error ? error.message : String(error)
+                    },
                     isError: true
                 };
             }
         }
 
         return {
-            content: [
-                {
-                    type: "text",
-                    text: `Tool: ${request.name} does not specify an input schema.`
-                }
-            ],
+            structuredContent: {
+                type: "text",
+                text: `Tool: ${request.name} does not specify an input schema.`
+            },
             isError: true
         };
     }
@@ -641,7 +637,7 @@ class Orchestrator {
     /**
      * Handles the tool request within the timeout limit (default 10 seconds ~ 10_000 [ms])
      */
-    async handleToolRequest(request: ToolInvocationRequest): Promise<ToolInvocationResult> {
+    async handleToolRequest(request: ToolRequest): Promise<ToolResult> {
         const tool = this._registeredTools[request.name];
 
         if (!tool) {
@@ -664,7 +660,7 @@ class Orchestrator {
         let timeoutHandler: NodeJS.Timeout;
 
         const toolResult = await this.runTool(tool, request);
-        const timeoutPromise: Promise<ToolInvocationResult> = new Promise((_, reject) => {
+        const timeoutPromise: Promise<ToolResult> = new Promise((_, reject) => {
             timeoutHandler = setTimeout(() => {
                 reject({
                     content: [

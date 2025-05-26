@@ -141,7 +141,7 @@ export const ReadResourceRequestSchema = z.object({
 export const ReadResourceResultSchema = z.object({
     content: z.array(
         z.union([TextResourceContentsSchema, BlobResourceContentsSchema]),
-    ),
+    )
 });
 
 /**
@@ -285,14 +285,7 @@ export const ToolRequestSchema = z.object({
 /**
  * Response to an executed tool request by the LLM
  */
-export const ToolInvocationResultSchema = z.object({
-    content: z.array(
-        z.union([
-            TextContentSchema,
-            ImageContentSchema,
-            AudioContentSchema
-        ])
-    ),
+export const ToolResultSchema = z.object({
     /**
      * An object containing structured tool output.
      *
@@ -309,8 +302,8 @@ export type ToolCallback<ParamArgs extends undefined | ZodRawShape = undefined> 
     ParamArgs extends ZodRawShape
     ? (
         args: z.objectOutputType<ParamArgs, ZodTypeAny>
-    ) => ToolInvocationResult | Promise<ToolInvocationResult>
-    : () => ToolInvocationResult | Promise<ToolInvocationResult>;
+    ) => ToolResult | Promise<ToolResult>
+    : () => ToolResult | Promise<ToolResult>;
 
 export type RegisteredTool = {
     description?: string;
@@ -404,15 +397,7 @@ const actionLogSchema = z.object({
     name: z.string().optional(),
     arguments: z.record(z.unknown()).optional(),
     timeExecuted: z.number(),
-    response: z.array(
-        z.union([
-            TextContentSchema,
-            ImageContentSchema,
-            AudioContentSchema,
-            TextResourceContentsSchema,
-            BlobResourceContentsSchema
-        ])
-    ),
+    response: z.object({}).passthrough().optional(),
     isError: z.boolean().default(false).optional()
 });
 
@@ -471,8 +456,8 @@ export type ReadResourceResult = Infer<typeof ReadResourceResultSchema>;
 
 /** Tools */
 export type Tool = Infer<typeof ToolSchema>;
-export type ToolInvocationRequest = Infer<typeof ToolRequestSchema>;
-export type ToolInvocationResult = Infer<typeof ToolInvocationResultSchema>;
+export type ToolRequest = Infer<typeof ToolRequestSchema>;
+export type ToolResult = Infer<typeof ToolResultSchema>;
 
 /** Content */
 export type TextContent = Infer<typeof TextContentSchema>;
