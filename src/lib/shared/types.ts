@@ -11,9 +11,11 @@ export enum ErrorCode {
     Timeout = 105,
     InvalidToolRequest = 106,
     InvalidToolResponse = 107,
-    InvalidResponse = 108,
-    BridgeMissing = 109,
-    MaxActionChainLengthExceeded = 110
+    InvalidResourceRequest = 108,
+    InvalidResourceResponse = 109,
+    InvalidResponse = 110,
+    BridgeMissing = 111,
+    MaxActionChainLengthExceeded = 112
 }
 
 // Content Schemas
@@ -34,6 +36,12 @@ export const AudioContentSchema = z.object({
     text: z.string()
 })
     .passthrough();
+
+// Requests
+export enum RequestTypes {
+    ToolRequest = "Tool-Request",
+    ResourceRequest = "Resource-Request"
+}
 
 // Resources
 /**
@@ -123,6 +131,7 @@ export const BlobResourceContentsSchema = ResourceContentsSchema.extend({
  * Sent from the client to the server, to read a specific resource URI.
  */
 export const ReadResourceRequestSchema = z.object({
+    type: z.literal(RequestTypes.ResourceRequest),
     uri: z.string()
 });
 
@@ -130,7 +139,7 @@ export const ReadResourceRequestSchema = z.object({
  * The server's response to a resources/read request from the client.
  */
 export const ReadResourceResultSchema = z.object({
-    contents: z.array(
+    content: z.array(
         z.union([TextResourceContentsSchema, BlobResourceContentsSchema]),
     ),
 });
@@ -266,7 +275,8 @@ export const ToolSchema = z.object({
 /**
  * Request by the LLM to invoke a tool
  */
-export const ToolInvocationRequestSchema = z.object({
+export const ToolRequestSchema = z.object({
+    type: z.literal(RequestTypes.ToolRequest),
     name: z.string(),
     // Validated with tool specific schema
     arguments: z.record(z.unknown())
@@ -357,7 +367,8 @@ export const LLMGeneratedErrorSchema = z.object({
 });
 
 export const MacDiscoveryOutputSchema = z.object({
-    toolInvocationRequest: ToolInvocationRequestSchema.nullable().optional(),
+    resourceRequest: ReadResourceRequestSchema.nullable().optional(),
+    toolRequest: ToolRequestSchema.nullable().optional(),
     error: LLMGeneratedErrorSchema.nullable().optional()
 });
 
@@ -381,7 +392,7 @@ const DiscoveryPromptSchema = PromptSchema.extend({});
  * Include context-enriched output content and any subsequent tool requests
  */
 export const LLMContextAwareOutputSchema = MacOutputSchema.extend({
-    toolInvocationRequest: ToolInvocationRequestSchema.nullable().optional()
+    toolInvocationRequest: ToolRequestSchema.nullable().optional()
 });
 
 const ContextAwarePromptSchema = PromptSchema.extend({
@@ -389,15 +400,17 @@ const ContextAwarePromptSchema = PromptSchema.extend({
 });
 
 const actionLogSchema = z.object({
-    type: z.enum(["Tool-Request", "Resource-Request"]),
+    type: z.nativeEnum(RequestTypes),
     name: z.string().optional(),
-    arguments: z.record(z.unknown()),
+    arguments: z.record(z.unknown()).optional(),
     timeExecuted: z.number(),
     response: z.array(
         z.union([
             TextContentSchema,
             ImageContentSchema,
-            AudioContentSchema
+            AudioContentSchema,
+            TextResourceContentsSchema,
+            BlobResourceContentsSchema
         ])
     ),
     isError: z.boolean().default(false).optional()
@@ -458,7 +471,7 @@ export type ReadResourceResult = Infer<typeof ReadResourceResultSchema>;
 
 /** Tools */
 export type Tool = Infer<typeof ToolSchema>;
-export type ToolInvocationRequest = Infer<typeof ToolInvocationRequestSchema>;
+export type ToolInvocationRequest = Infer<typeof ToolRequestSchema>;
 export type ToolInvocationResult = Infer<typeof ToolInvocationResultSchema>;
 
 /** Content */

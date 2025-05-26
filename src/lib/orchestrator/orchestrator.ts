@@ -24,7 +24,8 @@ import {
     ResourceMetadata,
     ResourceTemplate,
     ReadResourceRequest,
-    ReadResourceResult
+    ReadResourceResult,
+    RequestTypes
 } from "../shared/types";
 import PolicyManager from "../policy-manager/policyManager";
 
@@ -109,10 +110,10 @@ class Orchestrator {
         }
 
         try {
-            const firstToolRequest = (await this.discoveryPrompt(bridge, basePrompt));
+            const firstRequest = (await this.discoveryPrompt(bridge, basePrompt));
 
-            if (firstToolRequest) {
-                await this.contextAwarePrompt(bridge, basePrompt, firstToolRequest);
+            if (firstRequest) {
+                await this.contextAwarePrompt(bridge, basePrompt, firstRequest);
             }
         }
         catch (e) {
@@ -123,10 +124,10 @@ class Orchestrator {
     async discoveryPrompt(
         bridge: LLMBridge,
         basePrompt: string
-    ): Promise<ToolInvocationRequest | undefined> {
+    ): Promise<ReadResourceRequest | ToolInvocationRequest | undefined> {
         const discoveryPromptStructure: DiscoveryPrompt = {
             task: `
-            Generate a structured JSON response to the given prompt using the given checklist, policies, context, and available tools. 
+            Generate a structured JSON response to the given prompt using the given checklist, policies, context, available tools and resources. 
             The tool you select will invoked for you using the parameters you choose, and the resulting data will be fed 
             back to you as context in a follow-up prompt.
             `,
@@ -173,11 +174,15 @@ class Orchestrator {
 
         // Possible responses from the LLM
         const error = output?.error,
-            toolRequest = output?.toolInvocationRequest;
+            resourceRequest = output?.resourceRequest,
+            toolRequest = output?.toolRequest;
 
         // Custom error message generated
         if (error) {
             bridge.completionHandler({ error: error.errorMessage });
+        }
+        else if (resourceRequest) {
+            return resourceRequest;
         }
         // Tool request valid
         else if (toolRequest) {
@@ -190,14 +195,12 @@ class Orchestrator {
                 error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResponse}`
             });
         }
-
-        return;
     }
 
     async contextAwarePrompt(
         bridge: LLMBridge,
         basePrompt: string,
-        toolRequest: ToolInvocationRequest
+        request: ReadResourceRequest | ToolInvocationRequest
     ): Promise<void> {
         if (this._actionLogs.length > this.maxActionChainLength) {
             throw new MACError(
@@ -207,29 +210,50 @@ class Orchestrator {
         }
 
         // Tool invoked
-        const toolResponse = await this.handleToolRequest(toolRequest);
+        if (request.type == RequestTypes.ToolRequest) {
+            const toolResponse = await this.handleToolRequest(request);
 
-        // Update action log
-        this._actionLogs.push({
-            type: 'Tool-Request',
-            name: toolRequest.name,
-            arguments: toolRequest.arguments,
-            timeExecuted: Date.now(),
-            response: toolResponse.content,
-            isError: toolResponse.isError
-        });
-
-        if (toolResponse.isError) {
-            bridge.completionHandler({
-                error: `Internal error encountered. Error Code: ${ErrorCode.InvalidToolResponse}`
+            // Update action log
+            this._actionLogs.push({
+                type: request.type,
+                name: request.name,
+                arguments: request.arguments,
+                timeExecuted: Date.now(),
+                response: toolResponse.content,
+                isError: toolResponse.isError
             });
-            return;
+
+            if (toolResponse.isError) {
+                bridge.completionHandler({
+                    error: `Internal error encountered. Error Code: ${ErrorCode.InvalidToolResponse}`
+                });
+
+                return;
+            }
+        }
+        else {
+            // Resource read
+            try {
+                const resourceResponse = await this.handleResourceRequest(request);
+
+                this._actionLogs.push({
+                    type: request.type,
+                    name: request.uri,
+                    timeExecuted: Date.now(),
+                    response: resourceResponse.content,
+                    isError: false
+                });
+            } catch (error) {
+                bridge.completionHandler({
+                    error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResourceResponse}`
+                });
+            }
         }
 
         // Follow-up prompt
         const contextAwarePromptStructure: ContextAwarePrompt = {
             task: `
-            The resources you've selected have been executed and their data is available in the 'actionsTaken' field. 
+            The tools/resources you've selected have been executed and their data is available in the 'actionsTaken' field. 
 
             Using the available context, generate a structured JSON response to the given prompt. Follow the 
             checklist and policies. If the data and context provided is enough to answer the 'promptToAnswer' field then answer it
@@ -432,7 +456,7 @@ class Orchestrator {
                     `Resource: ${uri} is disabled`,
                 );
             }
-            return resource.readCallback(uri);
+            return await resource.readCallback(uri);
         }
 
         // Check templates
@@ -445,7 +469,7 @@ class Orchestrator {
                 .match(uri.toString());
 
             if (variables) {
-                return template.readCallback(uri, variables);
+                return await template.readCallback(uri, variables);
             }
         }
 
