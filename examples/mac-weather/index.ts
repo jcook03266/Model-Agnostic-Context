@@ -24,9 +24,9 @@ const WeatherResultSchema = z.object({
         interval: z.number(),
         temperature: z.number(),
         windspeed: z.number(),
-        is_day: z.union([z.literal(1), z.literal(0)]),
         winddirection: z.number(),
-        weatherCode: z.number()
+        is_day: z.union([z.literal(1), z.literal(0)]),
+        weatherCode: z.number().default(0)
     })
 });
 
@@ -57,6 +57,7 @@ function main() {
     });
 
     const mac = new Mac(openAIBridge);
+ 
     mac.addTool({
         name: "weather-checker",
         description: "Check the weather in any city and state in the United States",
@@ -90,19 +91,12 @@ function main() {
             const weather = await getWeather(lat, lon);
 
             return {
-                content: [
-                    {
-                        type: 'text',
-                        text: JSON.stringify(weather)
-                    }
-                ]
+                structuredContent: {
+                    current_weather: weather.current_weather
+                }
             };
         }
     });
-
-    // Timeout function
-    // Async logic
-    // Run both in parallel, if the timeout function finishes first then the 
 
     const noForecastFabricationPolicy = new PolicyBuilder()
         .setName("No Forecast Fabrication")

@@ -5,10 +5,10 @@ import {
 } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
-    ToolInvocationResult,
+    ToolResult,
     RegisteredTool,
     ToolCallback,
-    ToolInvocationRequest,
+    ToolRequest,
     MACError,
     ErrorCode,
     MacDiscoveryOutputSchema,
@@ -16,9 +16,19 @@ import {
     LLMContextAwareOutputSchema,
     ContextAwarePrompt,
     DiscoveryPrompt,
-    LLMMessageSchema
+    LLMMessageSchema,
+    RegisteredResource,
+    RegisteredResourceTemplate,
+    ReadResourceCallback,
+    ReadResourceTemplateCallback,
+    ResourceMetadata,
+    ResourceTemplate,
+    ReadResourceRequest,
+    ReadResourceResult,
+    RequestTypes
 } from "../shared/types";
 import PolicyManager from "../policy-manager/policyManager";
+import { extractValidJSON } from "../shared/utils";
 
 class Orchestrator {
     static instance: Orchestrator = new Orchestrator();
@@ -27,8 +37,12 @@ class Orchestrator {
     policyManager: PolicyManager = new PolicyManager();
     // Default is 10 consecutive actions
     maxActionChainLength = 10;
-    // Default is 10 seconds in [ms]
-    toolTimeout = 10_000;
+
+    // Resources
+    private _registeredResources: { [name: string]: RegisteredResource } = {};
+    private _registeredResourceTemplates: {
+        [name: string]: RegisteredResourceTemplate;
+    } = {};
 
     // Tools
     private _registeredTools: { [name: string]: RegisteredTool } = {};
@@ -97,11 +111,10 @@ class Orchestrator {
         }
 
         try {
-            const firstToolRequest = (await this.discoveryPrompt(bridge, basePrompt));
+            const firstRequest = (await this.discoveryPrompt(bridge, basePrompt));
 
-            if (firstToolRequest) {
-                await this.contextAwarePrompt(bridge, basePrompt, firstToolRequest);
-            }
+            // First request was valid, starting prompt chain to obtain final context enriched answer
+            if (firstRequest) await this.contextAwarePrompt(bridge, basePrompt, firstRequest);
         }
         catch (e) {
             console.error(e);
@@ -111,10 +124,10 @@ class Orchestrator {
     async discoveryPrompt(
         bridge: LLMBridge,
         basePrompt: string
-    ): Promise<ToolInvocationRequest | undefined> {
+    ): Promise<ReadResourceRequest | ToolRequest | undefined> {
         const discoveryPromptStructure: DiscoveryPrompt = {
             task: `
-            Generate a structured JSON response to the given prompt using the given checklist, policies, context, and available tools. 
+            Generate a structured JSON response to the given prompt using the given checklist, policies, context, available tools and resources. 
             The tool you select will invoked for you using the parameters you choose, and the resulting data will be fed 
             back to you as context in a follow-up prompt.
             `,
@@ -129,6 +142,8 @@ class Orchestrator {
             maxSequentialActions: this.maxActionChainLength,
             systemPolicies: this.policyManager.systemPoliciesToString(),
             userPolicies: this.policyManager.activePoliciesToString(),
+            resources: this.registeredResourcesToString(),
+            resourceTemplates: this.registeredResourceTemplatesToString(),
             tools: this.registeredToolsToString(),
             responseSchema: zodToJsonSchema(MacDiscoveryOutputSchema),
             errorCodes: ErrorCode,
@@ -145,8 +160,11 @@ class Orchestrator {
             return;
         }
 
-        const llmMessage = LLMMessageSchema.safeParse(res),
-            parsedResponse = llmMessage.data ? JSON.parse(llmMessage.data?.content.text) : undefined,
+        // Parse the LLM's response as a valid JSON
+        const message = LLMMessageSchema.safeParse(res),
+            parsedText = message.data?.content.text,
+            responseJSONString = parsedText ? extractValidJSON(parsedText) : undefined,
+            parsedResponse = responseJSONString ? JSON.parse(responseJSONString) : undefined,
             discoveryOutput = MacDiscoveryOutputSchema.safeParse(parsedResponse),
             output = discoveryOutput.data;
 
@@ -159,11 +177,15 @@ class Orchestrator {
 
         // Possible responses from the LLM
         const error = output?.error,
-            toolRequest = output?.toolInvocationRequest;
+            resourceRequest = output?.resourceRequest,
+            toolRequest = output?.toolRequest;
 
         // Custom error message generated
         if (error) {
             bridge.completionHandler({ error: error.errorMessage });
+        }
+        else if (resourceRequest) {
+            return resourceRequest;
         }
         // Tool request valid
         else if (toolRequest) {
@@ -176,16 +198,14 @@ class Orchestrator {
                 error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResponse}`
             });
         }
-
-        return;
     }
 
     async contextAwarePrompt(
         bridge: LLMBridge,
         basePrompt: string,
-        toolRequest: ToolInvocationRequest
+        request: ReadResourceRequest | ToolRequest
     ): Promise<void> {
-        if (this._actionLogs.length >= this.maxActionChainLength) {
+        if (this._actionLogs.length > this.maxActionChainLength) {
             throw new MACError(
                 ErrorCode.MaxActionChainLengthExceeded,
                 `Maximum action chain length exceeded, increase limit.`
@@ -193,29 +213,50 @@ class Orchestrator {
         }
 
         // Tool invoked
-        const toolResponse = await this.handleToolRequest(toolRequest);
+        if (request.type == RequestTypes.ToolRequest) {
+            const toolResponse = await this.handleToolRequest(request);
 
-        // Update action log
-        this._actionLogs.push({
-            type: 'Tool-Request',
-            name: toolRequest.name,
-            arguments: toolRequest.arguments,
-            timeExecuted: Date.now(),
-            response: toolResponse.content,
-            isError: toolResponse.isError
-        });
-
-        if (toolResponse.isError) {
-            bridge.completionHandler({
-                error: `Internal error encountered. Error Code: ${ErrorCode.InvalidToolResponse}`
+            // Update action log
+            this._actionLogs.push({
+                type: request.type,
+                name: request.name,
+                arguments: request.arguments,
+                timeExecuted: Date.now(),
+                response: toolResponse,
+                isError: toolResponse.isError
             });
-            return;
+
+            if (toolResponse.isError) {
+                bridge.completionHandler({
+                    error: `Internal error encountered. Error Code: ${ErrorCode.InvalidToolResponse}`
+                });
+
+                return;
+            }
+        }
+        else {
+            // Resource read
+            try {
+                const resourceResponse = await this.handleResourceRequest(request);
+
+                this._actionLogs.push({
+                    type: request.type,
+                    name: request.uri,
+                    timeExecuted: Date.now(),
+                    response: resourceResponse,
+                    isError: false
+                });
+            } catch (error) {
+                bridge.completionHandler({
+                    error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResourceResponse}`
+                });
+            }
         }
 
         // Follow-up prompt
         const contextAwarePromptStructure: ContextAwarePrompt = {
             task: `
-            The resources you've selected have been executed and their data is available in the 'actionsTaken' field. 
+            The tools/resources you've selected have been executed and their data is available in the 'actionsTaken' field. 
 
             Using the available context, generate a structured JSON response to the given prompt. Follow the 
             checklist and policies. If the data and context provided is enough to answer the 'promptToAnswer' field then answer it
@@ -235,6 +276,8 @@ class Orchestrator {
             systemPolicies: this.policyManager.systemPoliciesToString(),
             userPolicies: this.policyManager.activePoliciesToString(),
             tools: this.registeredToolsToString(),
+            resources: this.registeredResourcesToString(),
+            resourceTemplates: this.registeredResourceTemplatesToString(),
             responseSchema: zodToJsonSchema(LLMContextAwareOutputSchema),
             errorCodes: ErrorCode,
             promptToAnswer: basePrompt
@@ -250,8 +293,11 @@ class Orchestrator {
             return;
         }
 
-        const llmMessage = LLMMessageSchema.safeParse(res),
-            parsedResponse = llmMessage.data ? JSON.parse(llmMessage.data?.content.text) : undefined,
+        // Parse the LLM's response as a valid JSON
+        const message = LLMMessageSchema.safeParse(res),
+            parsedText = message.data?.content.text,
+            responseJSONString = parsedText ? extractValidJSON(parsedText) : undefined,
+            parsedResponse = responseJSONString ? JSON.parse(responseJSONString) : undefined,
             contextAwareOutput = LLMContextAwareOutputSchema.safeParse(parsedResponse),
             output = contextAwareOutput.data;
 
@@ -286,8 +332,155 @@ class Orchestrator {
                 error: `Internal error encountered. Error Code: ${ErrorCode.InvalidResponse}`
             });
         }
+    }
 
-        return;
+    // Resources
+    /**
+     * Registers a resource `name` at a fixed URI, which will use the given callback to respond to read requests.
+     */
+    registerResource(name: string, uri: string, readCallback: ReadResourceCallback): RegisteredResource;
+
+    /**
+     * Registers a resource `name` at a fixed URI with metadata, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        uri: string,
+        metadata: ResourceMetadata,
+        callback: ReadResourceCallback,
+    ): RegisteredResource;
+
+    /**
+     * Registers a resource `name` with a template pattern, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        template: ResourceTemplate,
+        callback: ReadResourceTemplateCallback,
+    ): RegisteredResourceTemplate;
+
+    /**
+     * Registers a resource `name` with a template pattern and metadata, which will use the given callback to respond to read requests.
+     */
+    registerResource(
+        name: string,
+        template: ResourceTemplate,
+        metadata: ResourceMetadata,
+        callback: ReadResourceTemplateCallback,
+    ): RegisteredResourceTemplate;
+
+    registerResource(
+        name: string,
+        uriOrTemplate: string | ResourceTemplate,
+        ...rest: unknown[]
+    ): RegisteredResource | RegisteredResourceTemplate {
+        let metadata: ResourceMetadata | undefined;
+        if (typeof rest[0] === "object") {
+            metadata = rest.shift() as ResourceMetadata;
+        }
+
+        const callback = rest[0] as
+            | ReadResourceCallback
+            | ReadResourceTemplateCallback;
+
+        if (typeof uriOrTemplate === "string") {
+            if (this._registeredResources[uriOrTemplate]) {
+                throw new Error(`Resource ${uriOrTemplate} is already registered`);
+            }
+
+            const registeredResource: RegisteredResource = {
+                name,
+                metadata,
+                callback: callback as ReadResourceCallback,
+                enabled: true,
+                disable: () => registeredResource.update({ enabled: false }),
+                enable: () => registeredResource.update({ enabled: true }),
+                remove: () => registeredResource.update({ uri: null }),
+                update: (updates) => {
+                    if (typeof updates.uri !== "undefined" && updates.uri !== uriOrTemplate) {
+                        delete this._registeredResources[uriOrTemplate]
+                        if (updates.uri) this._registeredResources[updates.uri] = registeredResource
+                    }
+                    if (typeof updates.name !== "undefined") registeredResource.name = updates.name
+                    if (typeof updates.metadata !== "undefined") registeredResource.metadata = updates.metadata
+                    if (typeof updates.callback !== "undefined") registeredResource.callback = updates.callback
+                    if (typeof updates.enabled !== "undefined") registeredResource.enabled = updates.enabled
+                }
+            };
+
+            this._registeredResources[uriOrTemplate] = registeredResource;
+            return registeredResource;
+
+        } else {
+            if (this._registeredResourceTemplates[name]) {
+                throw new Error(`Resource template ${name} is already registered`);
+            }
+
+            const registeredResourceTemplate: RegisteredResourceTemplate = {
+                resourceTemplate: uriOrTemplate,
+                metadata,
+                callback: callback as ReadResourceTemplateCallback,
+                enabled: true,
+                disable: () => registeredResourceTemplate.update({ enabled: false }),
+                enable: () => registeredResourceTemplate.update({ enabled: true }),
+                remove: () => registeredResourceTemplate.update({ name: null }),
+                update: (updates) => {
+                    if (typeof updates.name !== "undefined" && updates.name !== name) {
+                        delete this._registeredResourceTemplates[name]
+                        if (updates.name) this._registeredResourceTemplates[updates.name] = registeredResourceTemplate
+                    }
+                    if (typeof updates.template !== "undefined") registeredResourceTemplate.resourceTemplate = updates.template
+                    if (typeof updates.metadata !== "undefined") registeredResourceTemplate.metadata = updates.metadata
+                    if (typeof updates.callback !== "undefined") registeredResourceTemplate.callback = updates.callback
+                    if (typeof updates.enabled !== "undefined") registeredResourceTemplate.enabled = updates.enabled
+                }
+            };
+
+            this._registeredResourceTemplates[name] = registeredResourceTemplate;
+            return registeredResourceTemplate;
+        }
+    }
+
+    removeResource(uriOrTemplate: string) {
+        this._registeredResources[uriOrTemplate].remove();
+        this._registeredResourceTemplates[uriOrTemplate].remove();
+    }
+
+    async handleResourceRequest(request: ReadResourceRequest): Promise<ReadResourceResult> {
+        const uri = new URL(request.uri);
+
+        // Check if resource exists
+        const resource = this._registeredResources[uri.toString()];
+
+        // Verify resource is enabled
+        if (resource) {
+            if (!resource.enabled) {
+                throw new MACError(
+                    ErrorCode.InvalidParams,
+                    `Resource: ${uri} is disabled`,
+                );
+            }
+            return await resource.callback(uri);
+        }
+
+        // Check templates
+        for (const template of Object.values(
+            this._registeredResourceTemplates,
+        )) {
+            const variables = template
+                .resourceTemplate
+                .uriTemplate
+                .match(uri.toString());
+
+            if (variables) {
+                return await template.callback(uri, variables);
+            }
+        }
+
+        throw new MACError(
+            ErrorCode.InvalidParams,
+            `Resource ${uri} not found`,
+        );
     }
 
     // Tools
@@ -295,12 +488,12 @@ class Orchestrator {
     * - Overloaded functions for register tool method
     * Registers a zero-argument tool `name`, which will run the given function when the client calls it.
     */
-    registerTool(name: string, callback: ToolCallback): void;
+    registerTool(name: string, callback: ToolCallback): RegisteredTool;
 
     /**
      * Registers a zero-argument tool `name` (with a description) which will run the given function when the client calls it.
      */
-    registerTool(name: string, description: string, callback: ToolCallback): void;
+    registerTool(name: string, description: string, callback: ToolCallback): RegisteredTool;
 
     /**
      * Registers a tool `name` accepting the given arguments, which must be an object containing named properties associated with Zod schemas. When the client calls it, the function will be run with the parsed and validated arguments.
@@ -310,7 +503,7 @@ class Orchestrator {
         paramsSchema: Args,
         outputSchema: Args,
         callback: ToolCallback<Args>
-    ): void;
+    ): RegisteredTool;
 
     /**
      * Registers a tool `name` (with a description) accepting the given arguments, which must be an object containing named properties associated with Zod schemas. When the client calls it, the function will be run with the parsed and validated arguments.
@@ -321,7 +514,7 @@ class Orchestrator {
         paramsSchema: ParamArgs,
         responseSchema: OutputSchema,
         callback: ToolCallback<ParamArgs>
-    ): void;
+    ): RegisteredTool;
 
     registerTool<ParamArgs extends ZodRawShape, OutputSchema extends ZodRawShape>(
         name: string,
@@ -330,9 +523,9 @@ class Orchestrator {
         responseSchema: OutputSchema,
         timeout: number,
         callback: ToolCallback<ParamArgs>
-    ): void;
+    ): RegisteredTool;
 
-    registerTool(name: string, ...rest: unknown[]): void {
+    registerTool(name: string, ...rest: unknown[]): RegisteredTool {
         if (this._registeredTools[name]) {
             throw new Error(`Tool: ${name} is already registered`);
         }
@@ -358,25 +551,56 @@ class Orchestrator {
         }
 
         const callback = rest[0] as ToolCallback<ZodRawShape | undefined>;
-        this._registeredTools[name] = {
+        return this._createRegisteredTool(name, description, paramsSchema, responseSchema, callback, timeout);
+    }
+
+    private _createRegisteredTool(
+        name: string,
+        description: string | undefined,
+        inputSchema: ZodRawShape | undefined,
+        outputSchema: ZodRawShape | undefined,
+        callback: ToolCallback<ZodRawShape | undefined>,
+        timeout: number | undefined
+    ): RegisteredTool {
+        const registeredTool: RegisteredTool = {
             description,
-            inputSchema: paramsSchema === undefined ?
-                undefined : z.object(paramsSchema),
-            responseSchema: responseSchema === undefined ?
-                undefined : z.object(responseSchema),
-            timeout,
-            callback
+            inputSchema:
+                inputSchema === undefined ? undefined : z.object(inputSchema),
+            responseSchema:
+                outputSchema === undefined ? undefined : z.object(outputSchema),
+            callback,
+            // Default timeout duration is 10 seconds (10000[ms])
+            timeout: timeout ?? 10_000,
+            enabled: true,
+            disable: () => registeredTool.update({ enabled: false }),
+            enable: () => registeredTool.update({ enabled: true }),
+            remove: () => registeredTool.update({ name: null }),
+            update: (updates) => {
+                if (typeof updates.name !== "undefined" && updates.name !== name) {
+                    delete this._registeredTools[name];
+                    if (updates.name) this._registeredTools[updates.name] = registeredTool;
+                }
+
+                if (typeof updates.description !== "undefined") registeredTool.description = updates.description;
+                if (typeof updates.paramsSchema !== "undefined") registeredTool.inputSchema = z.object(updates.paramsSchema);
+                if (typeof updates.callback !== "undefined") registeredTool.callback = updates.callback;
+                if (typeof updates.enabled !== "undefined") registeredTool.enabled = updates.enabled;
+                if (typeof updates.timeout !== "undefined") registeredTool.timeout = updates.timeout;
+            },
         };
+
+        this._registeredTools[name] = registeredTool;
+        return registeredTool;
     }
 
     removeTool(name: string) {
-        delete this._registeredTools[name];
+        this._registeredTools[name].remove();
     }
 
     private async runTool(
         tool: RegisteredTool,
-        request: ToolInvocationRequest
-    ): Promise<ToolInvocationResult> {
+        request: ToolRequest
+    ): Promise<ToolResult> {
         if (tool.inputSchema) {
             const parseResult = await tool.inputSchema.safeParseAsync(
                 request.arguments
@@ -396,24 +620,20 @@ class Orchestrator {
                 return await Promise.resolve(callback(args));
             } catch (error) {
                 return {
-                    content: [
-                        {
-                            type: "text",
-                            text: error instanceof Error ? error.message : String(error)
-                        }
-                    ],
+                    structuredContent: {
+                        type: "text",
+                        text: error instanceof Error ? error.message : String(error)
+                    },
                     isError: true
                 };
             }
         }
 
         return {
-            content: [
-                {
-                    type: "text",
-                    text: `Tool: ${request.name} does not specify an input schema.`
-                }
-            ],
+            structuredContent: {
+                type: "text",
+                text: `Tool: ${request.name} does not specify an input schema.`
+            },
             isError: true
         };
     }
@@ -421,7 +641,7 @@ class Orchestrator {
     /**
      * Handles the tool request within the timeout limit (default 10 seconds ~ 10_000 [ms])
      */
-    async handleToolRequest(request: ToolInvocationRequest): Promise<ToolInvocationResult> {
+    async handleToolRequest(request: ToolRequest): Promise<ToolResult> {
         const tool = this._registeredTools[request.name];
 
         if (!tool) {
@@ -431,12 +651,20 @@ class Orchestrator {
             );
         }
 
+        // Verify tool is enabled
+        if (!tool.enabled) {
+            throw new MACError(
+                ErrorCode.InvalidParams,
+                `Tool: ${request.name} is disabled`,
+            );
+        }
+
         // 10 seconds is the default timeout duration for all tool requests if one is not specified
         const timeoutDuration = tool.timeout ?? 10_000;
         let timeoutHandler: NodeJS.Timeout;
 
         const toolResult = await this.runTool(tool, request);
-        const timeoutPromise: Promise<ToolInvocationResult> = new Promise((_, reject) => {
+        const timeoutPromise: Promise<ToolResult> = new Promise((_, reject) => {
             timeoutHandler = setTimeout(() => {
                 reject({
                     content: [
@@ -453,13 +681,78 @@ class Orchestrator {
         return Promise.race([
             timeoutPromise,
             toolResult
-        ]).then((res) => {
+        ]).then(async (res) => {
             clearTimeout(timeoutHandler);
+
+            // Force check the response for structure, if no structure exists then throw an error.
+            if (tool.responseSchema) {
+                if (!res.structuredContent) {
+                    throw new MACError(
+                        ErrorCode.InvalidParams,
+                        `Tool: ${request.name} has an output schema but no structured content was provided`,
+                    );
+                }
+
+                // if the tool has an output schema, validate structured content
+                const parseResult = await tool.responseSchema.safeParseAsync(
+                    res.structuredContent,
+                );
+
+                if (!parseResult.success) {
+                    throw new MACError(
+                        ErrorCode.InvalidParams,
+                        `Invalid structured content for tool ${request.name}: ${parseResult.error.message}`,
+                    );
+                }
+            }
+
             return res;
         });
     }
 
     // Utils
+    private registeredResourcesToString(): string[] {
+        const resourceDescriptions: string[] = [];
+
+        Object.entries(this._registeredResources).forEach((entry) => {
+            const name: string = entry[0],
+                resource: RegisteredResource = entry[1],
+                metadata: ResourceMetadata | undefined = resource.metadata,
+                isEnabled: boolean = resource.enabled;
+
+            const resourceJSONDescription = JSON.stringify({
+                name,
+                metadata: JSON.stringify(metadata),
+                isEnabled
+            });
+
+            resourceDescriptions.push(resourceJSONDescription);
+        });
+
+        return resourceDescriptions;
+    }
+
+    private registeredResourceTemplatesToString(): string[] {
+        const resourceTemplateDescriptions: string[] = [];
+
+        Object.entries(this._registeredResourceTemplates).forEach((entry) => {
+            const name: string = entry[0],
+                resourceTemplate: RegisteredResourceTemplate = entry[1],
+                metadata: ResourceMetadata | undefined = resourceTemplate.metadata,
+                isEnabled: boolean = resourceTemplate.enabled;
+
+            const resourceTemplateJSONDescription = JSON.stringify({
+                name,
+                metadata: JSON.stringify(metadata),
+                isEnabled
+            });
+
+            resourceTemplateDescriptions.push(resourceTemplateJSONDescription);
+        });
+
+        return resourceTemplateDescriptions;
+    }
+
     private registeredToolsToString(): string[] {
         const toolDescriptions: string[] = [];
 

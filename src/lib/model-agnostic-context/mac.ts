@@ -1,7 +1,7 @@
 import { ZodRawShape } from "zod";
 import LLMBridge from "../bridge/llmbridge";
 import Orchestrator from "../orchestrator/orchestrator";
-import { ErrorCode, MACError, ToolCallback } from "../shared/types";
+import { ErrorCode, MACError, ReadResourceCallback, ResourceMetadata, ResourceTemplate, ToolCallback } from "../shared/types";
 import { Policy } from "../policy-manager/policy";
 
 /**
@@ -21,6 +21,48 @@ export default class Mac {
     constructor(bridge: LLMBridge) {
         this.orchestrator.registerBridge(bridge);
         this.orchestrator.currentBridge = bridge.name;
+    }
+
+    // Configuration
+    public set maxActionChainLength(length: number) {
+        if (length < 1) {
+            throw new Error("MAC action chain must have a minimum length of 1");
+        }
+
+        this.orchestrator.maxActionChainLength = length;
+    }
+
+    // Resources
+    public addResource(
+        resource: {
+            name: string,
+            uri: string,
+            metadata: ResourceMetadata
+            callback: ReadResourceCallback
+        }) {
+        this.orchestrator
+            .registerResource(
+                resource.name,
+                resource.uri,
+                resource.metadata,
+                resource.callback
+            );
+    }
+
+    public addResourceTemplate(
+        resource: {
+            name: string,
+            template: ResourceTemplate,
+            metadata: ResourceMetadata
+            callback: ReadResourceCallback
+        }) {
+        this.orchestrator
+            .registerResource(
+                resource.name,
+                resource.template,
+                resource.metadata,
+                resource.callback
+            );
     }
 
     // Tools
@@ -58,6 +100,9 @@ export default class Mac {
     public removeTool(name: string) {
         this.orchestrator.removeTool(name);
     }
+
+    // Resources
+    // public addResource
 
     // Policy Management
     addPolicy(p: Policy) {
