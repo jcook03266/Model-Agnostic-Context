@@ -247,6 +247,8 @@ class Orchestrator {
             systemPolicies: this.policyManager.systemPoliciesToString(),
             userPolicies: this.policyManager.activePoliciesToString(),
             tools: this.registeredToolsToString(),
+            resources: this.registeredResourcesToString(),
+            resourceTemplates: this.registeredResourceTemplatesToString(),
             responseSchema: zodToJsonSchema(LLMContextAwareOutputSchema),
             errorCodes: ErrorCode,
             promptToAnswer: basePrompt
@@ -683,6 +685,48 @@ class Orchestrator {
     }
 
     // Utils
+    private registeredResourcesToString(): string[] {
+        const resourceDescriptions: string[] = [];
+
+        Object.entries(this._registeredResources).forEach((entry) => {
+            const name: string = entry[0],
+                resource: RegisteredResource = entry[1],
+                metadata: ResourceMetadata | undefined = resource.metadata,
+                isEnabled: boolean = resource.enabled;
+
+            const resourceJSONDescription = JSON.stringify({
+                name,
+                metadata: JSON.stringify(metadata),
+                isEnabled
+            });
+
+            resourceDescriptions.push(resourceJSONDescription);
+        });
+
+        return resourceDescriptions;
+    }
+
+    private registeredResourceTemplatesToString(): string[] {
+        const resourceTemplateDescriptions: string[] = [];
+
+        Object.entries(this._registeredResourceTemplates).forEach((entry) => {
+            const name: string = entry[0],
+                resourceTemplate: RegisteredResourceTemplate = entry[1],
+                metadata: ResourceMetadata | undefined = resourceTemplate.metadata,
+                isEnabled: boolean = resourceTemplate.enabled;
+
+            const resourceTemplateJSONDescription = JSON.stringify({
+                name,
+                metadata: JSON.stringify(metadata),
+                isEnabled
+            });
+
+            resourceTemplateDescriptions.push(resourceTemplateJSONDescription);
+        });
+
+        return resourceTemplateDescriptions;
+    }
+
     private registeredToolsToString(): string[] {
         const toolDescriptions: string[] = [];
 

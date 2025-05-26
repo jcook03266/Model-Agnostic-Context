@@ -367,6 +367,8 @@ const PromptSchema = z.object({
     maxSequentialActions: z.number(),
     systemPolicies: z.array(z.string()),
     userPolicies: z.array(z.string()),
+    resources: z.array(z.string()),
+    resourceTemplatesToString: z.array(z.string()),
     tools: z.array(z.string()),
     responseSchema: z.any(),
     errorCodes: z.any(),
